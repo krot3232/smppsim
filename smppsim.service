@@ -1,0 +1,25 @@
+[Unit]
+Description=SMPP Simulator
+After=network.target
+
+[Service]
+Type=simple
+
+WorkingDirectory=/opt/smppsim
+
+ExecStart=java \
+    -Djava.net.preferIPv4Stack=true \
+    -Djava.util.logging.config.file=conf/logging.properties \
+    -jar smppsim.jar \
+    conf/smppsim.props
+
+Restart=on-failure
+RestartSec=5
+
+User=smppsim
+Group=smppsim
+
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
