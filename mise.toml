@@ -1,0 +1,8 @@
+min_version = "2026.8.12"
+
+[tools]
+java = "11"
+
+[tasks.smppsim]
+description = "START SMPPSim1"
+run = "java -Djava.net.preferIPv4Stack=true -Djava.util.logging.config.file=conf/logging.properties -jar smppsim.jar conf/smppsim.props"
