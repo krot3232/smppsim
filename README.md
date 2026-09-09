@@ -3,6 +3,8 @@ SMPPSim is an SMPP (Short Message Peer-to-Peer) server simulator designed for de
 
 It allows you to run a local SMPP SMSC without connecting to a real SMSC.
 
+[![Docker](https://img.shields.io/docker/pulls/krot3232/smppsim?style=flat-square&logo=docker&logoColor=white)](https://hub.docker.com/r/krot3232/smppsim)
+
 ## Features
 
 - SMPP server for testing clients
