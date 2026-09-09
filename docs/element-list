@@ -1,0 +1,5 @@
+com.seleniumsoftware.SMPPSim
+com.seleniumsoftware.SMPPSim.exceptions
+com.seleniumsoftware.SMPPSim.pdu
+com.seleniumsoftware.SMPPSim.pdu.util
+com.seleniumsoftware.SMPPSim.util
