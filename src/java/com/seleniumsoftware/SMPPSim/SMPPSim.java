@@ -115,6 +115,10 @@ public class SMPPSim {
 
 	private static long delayReceiptsBy;
 
+	private static long enquireLinkResponseDelay = 0;
+
+	private static boolean dropEnquireLinkResponses = false;
+
 	// Message ID allocation
 	private static long start_at = 0;
 
@@ -324,6 +328,13 @@ public class SMPPSim {
 		delayed_iqueue_period = 1000 * getIntProperty(props, "DELAYED_INBOUND_QUEUE_PROCESSING_PERIOD", 60);
 		delayed_inbound_queue_max_attempts = getIntProperty(props, "DELAYED_INBOUND_QUEUE_MAX_ATTEMPTS", 10);
 
+		enquireLinkResponseDelay = getLongProperty(props, "ENQUIRE_LINK_RESPONSE_DELAY", 0);
+		if (enquireLinkResponseDelay < 0) {
+			logger.warning("ENQUIRE_LINK_RESPONSE_DELAY cannot be negative. Defaulting to 0");
+			enquireLinkResponseDelay = 0;
+		}
+		dropEnquireLinkResponses = Boolean.valueOf(props.getProperty("DROP_ENQUIRE_LINK_RESPONSES")).booleanValue();
+
 		setCaptureSmeBinary(Boolean.valueOf(props.getProperty("CAPTURE_SME_BINARY")).booleanValue());
 		setCaptureSmeBinaryToFile(props.getProperty("CAPTURE_SME_BINARY_TO_FILE"));
 		setCaptureSmppsimBinary(Boolean.valueOf(props.getProperty("CAPTURE_SMPPSIM_BINARY")).booleanValue());
@@ -433,6 +444,8 @@ public class SMPPSim {
 		logger.info("=  PERCENTAGE_ACCEPTED                     :" + percentageAccepted);
 		logger.info("=  PERCENTAGE_REJECTED                     :" + percentageRejected);
 		logger.info("=  DISCARD_FROM_QUEUE_AFTER                :" + discardFromQueueAfter);
+		logger.info("=  ENQUIRE_LINK_RESPONSE_DELAY             :" + enquireLinkResponseDelay);
+		logger.info("=  DROP_ENQUIRE_LINK_RESPONSES             :" + dropEnquireLinkResponses);
 		logger.info("=  OUTBIND_ENABLED                         :" + outbind_enabled);
 		logger.info("=  OUTBIND_ESME_IP_ADDRESS                 :" + esme_ip_address);
 		logger.info("=  OUTBIND_ESME_PORT		                :" + esme_port);
@@ -1175,5 +1188,21 @@ public class SMPPSim {
 
 	public static void setSimulate_variable_submit_sm_response_times(boolean simulateVariableSubmitSmResponseTimes) {
 		simulate_variable_submit_sm_response_times = simulateVariableSubmitSmResponseTimes;
+	}
+
+	public static long getEnquireLinkResponseDelay() {
+		return enquireLinkResponseDelay;
+	}
+
+	public static void setEnquireLinkResponseDelay(long enquireLinkResponseDelayMs) {
+		enquireLinkResponseDelay = enquireLinkResponseDelayMs;
+	}
+
+	public static boolean isDropEnquireLinkResponses() {
+		return dropEnquireLinkResponses;
+	}
+
+	public static void setDropEnquireLinkResponses(boolean dropEnquireLinkResponsesFlag) {
+		dropEnquireLinkResponses = dropEnquireLinkResponsesFlag;
 	}
 }

@@ -820,6 +820,25 @@ public class StandardProtocolHandler {
 			LoggingUtilities.logDecodedPdu(smppmsg);
 		smsc.writeDecodedSme(smppmsg.toString());
 		logger.info(" ");
+
+		// A configurable delay, and the option to swallow the answer entirely, so
+		// clients can be tested against an SMSC that is slow or silent on keepalives.
+		// Both apply before the bind state is checked, so an ESME_RINVBNDSTS answer is
+		// delayed or dropped just like a normal one.
+		if (SMPPSim.isDropEnquireLinkResponses()) {
+			logger.info("DROP_ENQUIRE_LINK_RESPONSES is set: no ENQUIRE_LINK_RESP will be sent");
+			smsc.incEnquireLinkERR();
+			return;
+		}
+		long el_delay = SMPPSim.getEnquireLinkResponseDelay();
+		if (el_delay > 0) {
+			logger.info("Delaying ENQUIRE_LINK_RESP by " + el_delay + "ms");
+			try {
+				Thread.sleep(el_delay);
+			} catch (InterruptedException e) {
+			}
+		}
+
 		// now make the response object
 		EnquireLinkResp smppresp = new EnquireLinkResp(smppmsg);
 

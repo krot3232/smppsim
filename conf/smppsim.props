@@ -181,3 +181,9 @@ DELIVERY_RECEIPT_TLV=1403/0A/34343132333435363738
 # MISC
 SMSCID=SMPPSim
 SIMULATE_VARIABLE_SUBMIT_SM_RESPONSE_TIMES=false
+
+# Delay before answering ENQUIRE_LINK, in milliseconds. 0 = answer immediately
+ENQUIRE_LINK_RESPONSE_DELAY=0
+
+# Do not answer ENQUIRE_LINK at all. Takes precedence over the delay above
+DROP_ENQUIRE_LINK_RESPONSES=false

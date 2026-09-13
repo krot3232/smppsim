@@ -251,6 +251,8 @@ Properties marked **Required** have no default: leaving them out aborts start-up
 | `PERCENTAGE_REJECTED` | Share ending in REJECTED. Default `2`. | `20` |
 | `DISCARD_FROM_QUEUE_AFTER` | Age in ms after which a message state is dropped from the outbound queue and stops being visible to QUERY_SM. Default `60000`. | `60000` |
 | `SIMULATE_VARIABLE_SUBMIT_SM_RESPONSE_TIMES` | Delay SUBMIT_SM responses by a randomised, drifting amount instead of answering immediately. | `false` |
+| `ENQUIRE_LINK_RESPONSE_DELAY` | Hold every ENQUIRE_LINK_RESP for this many ms before sending it. `0` answers immediately, which is the current behaviour. A negative value logs a warning and is treated as `0`. Default `0`. | `0` |
+| `DROP_ENQUIRE_LINK_RESPONSES` | Never answer ENQUIRE_LINK at all. Takes precedence over the delay above. Defaults to `false` when absent or empty. | `false` |
 | `INBOUND_QUEUE_MAX_SIZE` | Capacity of the inbound queue holding MO messages and delivery receipts. Default `1000`. | `1000` |
 | `OUTBOUND_QUEUE_MAX_SIZE` | Capacity of the outbound queue holding the state of submitted messages. Default `1000`. | `1000` |
 | `DELAYED_INBOUND_QUEUE_PROCESSING_PERIOD` | Interval in `seconds` between retries of messages an ESME rejected with ESME_RMSGQFUL. Default `60`. | `60` |
@@ -334,6 +336,33 @@ deliver_sm #1: 07711878787 -> 1000, esm_class=0, data_coding=0, 14 bytes
 ```
 
 Note the destination in the shipped file: `1000`. A receiver only gets these messages if the `address_range` it bound with matches that address, which is why the example above lets the script fall back to its default of `.*`.
+
+### Slow and silent keepalives
+
+`ENQUIRE_LINK_RESPONSE_DELAY` and `DROP_ENQUIRE_LINK_RESPONSES` make the simulator answer the SMPP keepalive late or not at all, which is how a client's own enquire_link timeout and reconnect logic gets exercised.
+
+Both act before the bind state of the session is checked, so the ESME_RINVBNDSTS answer an unbound session gets is delayed or dropped just like a normal one. Dropping wins over delaying: no response is sent and the handler returns straight away. The incoming PDU is still decoded, logged and written to the capture files either way; a dropped answer counts towards `enquire_link_err` in the statistics, since nothing was answered OK.
+
+The delay blocks the connection handler thread of that one session, so while it lasts the simulator reads no further PDUs from that client — which is the point, since that is what a busy SMSC looks like. Other sessions are unaffected, but remember that `SMPP_CONNECTION_HANDLERS` is also the limit on concurrent sessions.
+
+With `ENQUIRE_LINK_RESPONSE_DELAY=3000`, the bundled script shows the delay directly:
+
+```bash
+smpp-bash/send_enquire_link.sh -n 2
+```
+
+```
+enquire_link #1: ESME_ROK, seq=2, 3016.6 ms
+enquire_link #2: ESME_ROK, seq=3, 3021.4 ms
+2 sent, 2 answered, 0 lost; min/avg/max 3016.6/3019.0/3021.4 ms
+```
+
+Lower its timeout below the delay, or set `DROP_ENQUIRE_LINK_RESPONSES=true`, and the pings are reported as lost and the script exits with status 5:
+
+```
+enquire_link #1: no answer within 1s
+1 sent, none answered
+```
 
 ## Logging
 
