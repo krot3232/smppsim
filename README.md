@@ -7,23 +7,34 @@ It allows you to run a local SMPP SMSC without connecting to a real SMSC.
 
 ## Features
 
-- SMPP server for testing clients
-- SMPP port: `2775`
-- Web interface: `8088`
-- Shell script startup
-- `systemd` service support
-- Docker support
+- SMPP server for testing clients, covering bind, `submit_sm`, `submit_multi`, `data_sm`, `deliver_sm`, `query_sm`, `cancel_sm`, `replace_sm`, `enquire_link`, `unbind` and outbind
+- Simulated message life cycle: messages move through delivery states on configurable probabilities and produce delivery receipts
+- Web interface with a form for injecting MO messages and a `?stats` endpoint
+- MO traffic generated from a CSV file at a configurable rate
+- Loopback and ESME to ESME routing, so submitted messages come back as `deliver_sm`
+- Raw and decoded PDU capture to file, plus an optional byte stream callback to an external server
+- Everything driven by a properties file, so several instances with different behaviour can run side by side — see [Configuration](#configuration)
+- Bundled `send_submit_sm.sh`, `send_deliver_sm.sh`, `send_query_sm.sh`, `send_cancel_sm.sh`, `send_replace_sm.sh`, `send_submit_multi.sh`, `send_data_sm.sh` and `send_enquire_link.sh` for exercising a running instance from the command line, with no SMPP client to install — see [smpp-bash/README.md](smpp-bash/README.md)
+- Startup via shell script, `mise` task, `systemd` service or Docker
 
 ## Ports
 
 | Port | Description |
 |------|-------------|
-| `2775` | SMPP server |
-| `8088` | Web interface |
+| `2775` | SMPP server, set by `SMPP_PORT` |
+| `8088` | Web interface, set by `HTTP_PORT` |
+
+These are the defaults from `conf/smppsim.props`; both are per instance settings, so a second instance started with its own properties file can use different ones. When the byte stream callback is enabled, the simulator also connects out to `CALLBACK_PORT`, `3333` by default. The instances used by the test suite listen on 2775, 2776 and 2777 — see [Testing](#testing).
 
 ## Running
 
-SMPPSim can be started in three different ways.
+SMPPSim can be started in five different ways.
+
+None of the shell scripts in the repository carry the execute bit, so set it once before using any of them:
+
+```bash
+chmod +x *.sh smpp-bash/*.sh
+```
 
 ### 1. Using `startsmppsim.sh`
 
@@ -33,16 +44,26 @@ Start SMPPSim directly using the startup script:
 ./startsmppsim.sh
 ```
 
-If the script does not have execute permissions:
+### 2. Using `startwith.sh`
+
+Start SMPPSim with a configuration file of your choice, instead of the default `conf/smppsim.props`:
 
 ```bash
-chmod +x startsmppsim.sh
-./startsmppsim.sh
+./startwith.sh conf/props.mo
 ```
 
+Useful for running several instances side by side, each with its own ports and behaviour. See [Configuration](#configuration) for what a properties file can contain.
 
+### 3. Using mise
 
-### 2. Using systemd
+`mise.toml` declares the required Java version and a task that starts the simulator with the default configuration:
+
+```bash
+mise install
+mise run smppsim
+```
+
+### 4. Using systemd
 
 SMPPSim can be run as a `systemd` service using `smppsim.service`.
 
@@ -109,7 +130,7 @@ Restart SMPPSim:
 sudo systemctl restart smppsim
 ```
 
-### 3. Using Docker
+### 5. Using Docker
 
 Build the Docker image:
 
@@ -163,7 +184,6 @@ Remove the container:
 docker rm smppsim1
 ```
 
-
 ## Checking Ports
 
 Check the SMPP port:
@@ -184,8 +204,274 @@ You can also check the Web interface using `curl`:
 curl http://localhost:8088
 ```
 
+## Test Message Scripts
+
+`smpp-bash/` holds a set of command line tools that drive the simulator over real SMPP — submitting messages, receiving them, querying, cancelling, replacing and pinging a session — so a running instance can be checked without installing an SMPP client. They are plain bash over `/dev/tcp`: no client library, no Java, nothing to install, and the exit status of each one distinguishes the failure modes, which makes them usable as smoke tests in CI.
+
+```bash
+smpp-bash/send_submit_sm.sh
+```
+
+```
+connected to 127.0.0.1:2775
+bound as smppclient1, smsc system_id=SMPPSim
+submit_sm_resp: ESME_ROK, message_id=0
+unbound
+```
+
+The full documentation — what each script does, every option, the exit codes and the simulator behaviour worth knowing about — is in [smpp-bash/README.md](smpp-bash/README.md).
+
+## Configuration
+
+SMPPSim takes exactly one command line argument: the path to a properties file. Every property below is read by `SMPPSim.initialise()`, and the effective values are echoed to the log at start-up.
+
+Properties marked **Required** have no default: leaving them out aborts start-up with a parse error. Boolean properties are read with `Boolean.valueOf`, so anything other than `true` (case insensitive) means false, and an absent property means false. The examples are the values used by the shipped `conf/smppsim.props`.
+
+| Property | Description | Example |
+|---|---|---|
+| `SMPP_PORT` | TCP port the SMPP server listens on. **Required.** | `2775` |
+| `SMPP_CONNECTION_HANDLERS` | Number of connection handler threads, which is also the maximum number of concurrent SMPP sessions. **Required.** | `50` |
+| `HTTP_PORT` | TCP port of the built-in web interface. **Required.** | `8088` |
+| `HTTP_THREADS` | Number of threads serving the web interface. **Required.** | `1` |
+| `DOCROOT` | Directory the web interface serves files from. | `www` |
+| `AUTHORISED_FILES` | Comma separated whitelist of servable paths. Anything not listed is refused with HTTP 400, so a new web asset has to be added here. | `/css/style.css,/index.htm,/favicon.ico` |
+| `INJECT_MO_PAGE` | Path of the MO injection form, redisplayed after every injection. See the note below. | `/inject_mo.htm` |
+| `SMSCID` | `system_id` the simulator reports in bind responses. **Required.** | `SMPPSim` |
+| `SYSTEM_IDS` | Comma separated list of accepted `system_id` values. | `smppclient1,smppclient2,smppclient3` |
+| `PASSWORDS` | Passwords matched positionally against `SYSTEM_IDS`. A different number of elements in the two lists aborts start-up. | `password,password,password` |
+| `CONNECTION_HANDLER_CLASS` | Class run by every connection handler thread. Instantiated by name with `Class.forName`, like the two below. | `com.seleniumsoftware.SMPPSim.StandardConnectionHandler` |
+| `PROTOCOL_HANDLER_CLASS` | Class that decodes PDUs and builds responses. Point it at the bundled `TestProtocolHandler1`, `2` or `3` to simulate a misbehaving SMSC. | `com.seleniumsoftware.SMPPSim.StandardProtocolHandler` |
+| `LIFE_CYCLE_MANAGER` | Class driving message state transitions. | `com.seleniumsoftware.SMPPSim.LifeCycleManager` |
+| `MESSAGE_STATE_CHECK_FREQUENCY` | How often, in ms, the outbound queue is swept and message states are reassessed. Default `10000`. | `5000` |
+| `MAX_TIME_ENROUTE` | After this many ms a message moves to a final state regardless of the probabilities below. Default `2000`. | `10000` |
+| `PERCENTAGE_THAT_TRANSITION` | Probability in percent that a message changes state on a given sweep. Default `75`. | `100` |
+| `PERCENTAGE_DELIVERED` | Share of transitions ending in DELIVERED. Default `90`. | `40` |
+| `PERCENTAGE_UNDELIVERABLE` | Share ending in UNDELIVERABLE. Default `6`. | `20` |
+| `PERCENTAGE_ACCEPTED` | Share ending in ACCEPTED. Default `2`. | `20` |
+| `PERCENTAGE_REJECTED` | Share ending in REJECTED. Default `2`. | `20` |
+| `DISCARD_FROM_QUEUE_AFTER` | Age in ms after which a message state is dropped from the outbound queue and stops being visible to QUERY_SM. Default `60000`. | `60000` |
+| `SIMULATE_VARIABLE_SUBMIT_SM_RESPONSE_TIMES` | Delay SUBMIT_SM responses by a randomised, drifting amount instead of answering immediately. | `false` |
+| `INBOUND_QUEUE_MAX_SIZE` | Capacity of the inbound queue holding MO messages and delivery receipts. Default `1000`. | `1000` |
+| `OUTBOUND_QUEUE_MAX_SIZE` | Capacity of the outbound queue holding the state of submitted messages. Default `1000`. | `1000` |
+| `DELAYED_INBOUND_QUEUE_PROCESSING_PERIOD` | Interval in seconds between retries of messages an ESME rejected with ESME_RMSGQFUL. Default `60`. | `60` |
+| `DELAYED_INBOUND_QUEUE_MAX_ATTEMPTS` | How many times such a message is retried before it is discarded. Default `10`. | `100` |
+| `DELAY_DELIVERY_RECEIPTS_BY` | Hold receipts for this many ms before queueing them. `0` queues them immediately and the delay service is not started. Default `0`. | `1000` |
+| `DELIVERY_RECEIPT_OPTIONAL_PARAMS` | Include the standard v3.4 optional parameters in receipts for clients that bound as 3.4 or later. Defaults to `true` when absent or empty. | `true` |
+| `DELIVERY_RECEIPT_TLV` | Vendor TLV appended to every receipt, given as `tag/length/value` in hex. Empty disables it; a value that is not three slash separated parts aborts start-up. | `1403/0A/34343132333435363738` |
+| `DELIVER_SM_INCLUDES_USSD_SERVICE_OP` | Carry the `ussd_service_op` TLV of the original submission over into the receipt. | `false` |
+| `START_MESSAGE_ID_AT` | First `message_id` to hand out. The literal `random` starts from a random value. Absent from the shipped props file; defaults to `0`. | `random` |
+| `MESSAGE_ID_PREFIX` | String prepended to every `message_id`. Absent from the shipped props file; defaults to empty. | `SM` |
+| `LOOPBACK` | Turn every SUBMIT_SM into a DELIVER_SM sent back to the submitter, swapping source and destination addresses. Mutually exclusive with `ESME_TO_ESME`. | `FALSE` |
+| `ESME_TO_ESME` | Turn every SUBMIT_SM into a DELIVER_SM routed to whichever receiver session's `address_range` matches the destination, leaving the addresses as they are. Mutually exclusive with `LOOPBACK`: enabling both aborts start-up. | `false` |
+| `DELIVERY_MESSAGES_PER_MINUTE` | Rate at which canned MO messages are injected. `0` disables the service. **Required.** | `0` |
+| `DELIVER_MESSAGES_FILE` | CSV of canned MO messages, one `source,destination,text` per line. Only read when the rate is above zero. | `deliver_messages.csv` |
+| `OUTBIND_ENABLED` | Send an OUTBIND to a waiting ESME when an MO arrives with no receiver session bound. | `false` |
+| `OUTBIND_ESME_IP_ADDRESS` | Address of that ESME. Read only when outbind is enabled. Default `127.0.0.1`. | `127.0.0.1` |
+| `OUTBIND_ESME_PORT` | Port of that ESME. Falls back to `2776` if the value will not parse. | `2776` |
+| `OUTBIND_ESME_SYSTEMID` | `system_id` sent in the OUTBIND. Default `smppclient1`. | `smppclient1` |
+| `OUTBIND_ESME_PASSWORD` | Password sent in the OUTBIND. Default `password`. | `password` |
+| `DECODE_PDUS_IN_LOG` | Log a decoded, field by field form of each PDU alongside the hex dump. | `true` |
+| `CAPTURE_SME_BINARY` | Write the raw bytes of PDUs received from clients to a file. | `false` |
+| `CAPTURE_SME_BINARY_TO_FILE` | Destination file for the above. | `sme_binary.capture` |
+| `CAPTURE_SMPPSIM_BINARY` | Write the raw bytes of PDUs sent by the simulator to a file. | `false` |
+| `CAPTURE_SMPPSIM_BINARY_TO_FILE` | Destination file for the above. | `smppsim_binary.capture` |
+| `CAPTURE_SME_DECODED` | Write the decoded text form of received PDUs to a file. | `false` |
+| `CAPTURE_SME_DECODED_TO_FILE` | Destination file for the above. | `sme_decoded.capture` |
+| `CAPTURE_SMPPSIM_DECODED` | Write the decoded text form of sent PDUs to a file. | `false` |
+| `CAPTURE_SMPPSIM_DECODED_TO_FILE` | Destination file for the above. | `smppsim_decoded.capture` |
+| `CALLBACK` | Mirror every PDU sent and received to an external TCP callback server. | `false` |
+| `CALLBACK_TARGET_HOST` | Host of that server. Read only when `CALLBACK` is true. | `localhost` |
+| `CALLBACK_PORT` | Port of that server. | `3333` |
+| `CALLBACK_ID` | Four ASCII characters written into each callback frame to identify this instance. | `SIM1` |
+
+Notes:
+
+- The four `PERCENTAGE_DELIVERED` / `UNDELIVERABLE` / `ACCEPTED` / `REJECTED` values are cumulative thresholds and should add up to 100.
+- All timings are in milliseconds except `DELAYED_INBOUND_QUEUE_PROCESSING_PERIOD`, which is in seconds.
+- Capture files are deleted and recreated on every start-up.
+- Log destinations are not configured here but through the `java.util.logging` file passed as `-Djava.util.logging.config.file` — see [Logging](#logging).
+- A sample callback server is bundled as `com.seleniumsoftware.examples.CallbackServer`; start it with `./start_callback_server.sh`.
+
+### About `INJECT_MO_PAGE`
+
+The web interface serves its pages through a tiny template mechanism: before a page goes out, every `$$name$$` placeholder in it is replaced with a value. That is how the home page fills in its counters — `$$submit_sm_ok$$`, `$$deliver_sm_err$$` and the rest — and how the injection form remembers what you typed, through `$$source_addr$$`, `$$data_coding$$`, `$$esm_class$$` and a couple of dozen more. One placeholder, `$$message$$`, carries the control panel message, which is where `Message added to SMPPSim InboundQueue OK` appears after a successful injection.
+
+`INJECT_MO_PAGE` names the page that takes part in this twice. Having handled `/inject_mo?...`, the simulator renders that page and returns it as the response, so the browser lands back on the form with the values and the result message filled in. And when the page itself is requested, the simulator recognises the path and forces the rendering path, which a request carrying a query string would otherwise miss and be answered with HTTP 400.
+
+The value therefore has to name a file that exists under `DOCROOT` and is listed in `AUTHORISED_FILES`. Point it at something that is not there and the injection still happens — the message reaches the inbound queue as usual — but the browser gets an empty HTTP 404 instead of the form, which makes the endpoint look broken when it is not.
+
+## Logging
+
+SMPPSim logs through `java.util.logging`. Its configuration is separate from the properties file and is passed on the command line:
+
+```bash
+java -Djava.util.logging.config.file=conf/logging.properties -jar smppsim.jar conf/smppsim.props
+```
+
+Every bundled start script already does this. Leave the property out and the JDK's own default applies instead: records go to the console only, in the two line `SimpleFormatter` style, and nothing is written to `log/`.
+
+```
+Sep 13, 2026 5:05:08 PM com.seleniumsoftware.SMPPSim.SMPPSim showLegals
+INFO: =  SMPPSim Copyright (C) 2006 Selenium Software Ltd
+```
+
+With the shipped `conf/logging.properties` the same record is one line, and it is written to both the console and `log/smppsim0.log.0`:
+
+```
+2026.09.13 15:37:09 769 INFO    73 Assessing state of 1 messages in the OutboundQueue
+```
+
+That layout comes from `com.seleniumsoftware.SMPPSim.LogFormatter`: date, time with milliseconds, level padded to seven characters, the thread id, then the message. The thread id is what tells one SMPP session apart from another in a busy log.
+
+### Parameters
+
+| Property | Meaning | In `conf/logging.properties` |
+|---|---|---|
+| `handlers` | comma separated list of handlers to install | `FileHandler, ConsoleHandler` |
+| `.level` | level for the root logger, the first filter every record passes | `INFO` |
+| `<logger>.level` | level for one logger, overriding `.level`; SMPPSim logs everything under `com.seleniumsoftware.smppsim` | not set |
+| `java.util.logging.FileHandler.pattern` | path of the log file | `./log/smppsim%u.log` |
+| `java.util.logging.FileHandler.limit` | bytes per file before rotating; `0` means no limit | `5000000` |
+| `java.util.logging.FileHandler.count` | how many files to rotate through | `10` |
+| `java.util.logging.FileHandler.formatter` | how records are laid out | `com.seleniumsoftware.SMPPSim.LogFormatter` |
+| `java.util.logging.FileHandler.level` | second filter, applied by the handler; defaults to `ALL` | not set |
+| `java.util.logging.FileHandler.append` | append to an existing file instead of truncating it; defaults to `false` | not set |
+| `java.util.logging.FileHandler.encoding` | character set of the file; defaults to the platform encoding | not set |
+| `java.util.logging.ConsoleHandler.level` | second filter for the console | `INFO` |
+| `java.util.logging.ConsoleHandler.formatter` | layout for the console | `com.seleniumsoftware.SMPPSim.LogFormatter` |
+
+The placeholders in `pattern` are the standard ones: `%t` the temporary directory, `%h` the user's home, `%g` the generation number, `%u` a unique number and `%%` a literal percent sign.
+
+Every property whose name ends in `level` takes one of the nine `java.util.logging` levels. Setting a level admits records of that severity and everything above it, so `INFO` also lets `WARNING` and `SEVERE` through:
+
+| Level | Value | What SMPPSim puts here |
+|---|---|---|
+| `OFF` | — | nothing; switches the logger or handler off entirely |
+| `SEVERE` | 1000 | start-up failures: a missing properties file, a port already in use, a malformed `DELIVERY_RECEIPT_TLV` |
+| `WARNING` | 900 | rejected PDUs, failed authentication, full queues, exceptions that did not stop the simulator |
+| `INFO` | 800 | the default working level: the configuration banner, every PDU as a hex dump and in decoded form, state transitions, queue sizes |
+| `CONFIG` | 700 | unused by SMPPSim |
+| `FINE` | 500 | two records only, when an object enters or leaves the outbound queue |
+| `FINER` | 400 | unused by SMPPSim |
+| `FINEST` | 300 | the detailed internal trace: life cycle thresholds, queue decisions, address matching, HTTP argument parsing |
+| `ALL` | — | everything; the default for a handler that has no level of its own |
+
+`OFF` and `ALL` are not levels a record can carry, only thresholds. Note how little sits between `INFO` and `FINEST`: dropping to `FINE` or `FINER` gains almost nothing over `INFO`, which is why the tracing recipe below goes straight to `FINEST`.
+
+### Turning on detailed tracing
+
+A record has to pass two filters: the logger level and then the level of each handler. To see the internal tracing — queue decisions, life cycle thresholds, HTTP argument parsing — lower the logger:
+
+```
+com.seleniumsoftware.smppsim.level = FINEST
+```
+
+That alone sends FINEST records to the file, because `FileHandler` has no level set and so defaults to `ALL`, while the console keeps its `INFO` and stays readable. Lower `java.util.logging.ConsoleHandler.level` as well if you want them on screen too.
+
+```
+2026.09.13 17:05:26 778 FINEST  1 transitionThreshold=1.01
+2026.09.13 17:05:26 778 FINEST  1 maxTimeEnroute=10000
+```
+
+PDU hex dumps and their decoded form are not part of this: they are logged at `INFO` and are switched on and off with `DECODE_PDUS_IN_LOG` in the properties file instead. The `CAPTURE_*` properties write the same traffic to separate files — see [Configuration](#configuration).
+
+### Things that bite
+
+`FileHandler` does not create directories. If `pattern` points somewhere that does not exist, logging fails at start-up and the simulator runs on with console output only — which is why the [Testing](#testing) instructions create `test/test1` and friends before starting the instances.
+
+The file on disk is `smppsim0.log.0`, not `smppsim.log`: `%u` resolves to `0` and, because `count` is greater than one, the generation number is appended as well. Set `count = 1` and the suffix disappears. A `.lck` file sits next to the log while the simulator is running.
+
+`%u` only stays `0` for the first JVM. Start a second instance with the same configuration file and it cannot lock the first file, so it takes `smppsim1.log.0` — which is convenient when running several instances, and surprising when looking for the log of the one that started second.
+
+## Building
+
+The project builds with Ant; there is no Maven or Gradle setup. Dependencies are the prebuilt jars in `lib/`.
+
+
+```bash
+mkdir -p classes
+ant -Dclasspath="classes:lib/smpp.jar:lib/junit.jar" \
+    -Dant.build.javac.source=8 -Dant.build.javac.target=8 jar
+```
+
+This writes `smppsim.jar` to the repository root, replacing the copy that ships with the repo.
+
+Both overrides are needed:
+
+- `-Dclasspath` — the `classpath` property in `build.xml` is written in Windows notation (`${lib}\smpp.jar`, `;` separators) and resolves to nothing on Linux, so `src/java/tests` will not compile without it.
+- `-Dant.build.javac.source` / `.target` — keeps the bytecode at class file version 52, so the jar still runs on the Temurin 8 image used by the Dockerfile. A recent JDK would otherwise emit class files the container cannot load.
+
+`build.xml` does not create its output directory, hence the `mkdir`. The build prints about 17 warnings for deprecated constructors (`new Integer(...)` and friends); that is expected.
+
+## Testing
+
+The JUnit suite is an integration suite: it drives three running instances of SMPPSim over SMPP, so start them first. The bundled `starttestservers.sh` does not work as shipped — it assigns `CLASSPATH` without exporting it — so launch the instances directly:
+
+```bash
+mkdir -p test/test1 test/test2 test/test3
+for n in 1:props.std_test 2:props.test1 3:props.mo; do
+  i=${n%%:*}; f=${n#*:}
+  nohup java -Djava.net.preferIPv4Stack=true \
+    -Djava.util.logging.config.file=conf/logging.properties.test$i \
+    -jar smppsim.jar conf/$f &
+done
+```
+
+They listen on SMPP ports 2775, 2776 and 2777. The `test/test*` directories have to exist beforehand, because the test logging configuration writes there and `FileHandler` does not create missing directories.
+
+Then run the suite, which needs the execute bit set as described under [Running](#running):
+
+```bash
+./runtests.sh
+```
+
+Expected output:
+
+```
+Time: 5.564
+
+OK (25 tests)
+```
+
+The tests authenticate as `smppclient` / `password`, which only the `conf/props.*test*` files define — running them against the default `conf/smppsim.props` fails at bind.
+
+Those three instances are worth keeping around for the [test message scripts](smpp-bash/README.md) too, because two of them behave differently from the default configuration. The one on 2776 runs `TestProtocolHandler1`, which refuses any destination that is not numeric and so makes `send_submit_multi.sh` report a partially refused response. The one on 2777 runs the MO service, which produces a message a minute from `deliver_messages.csv` for `send_deliver_sm.sh -l` to pick up:
+
+```bash
+smpp-bash/send_submit_multi.sh -P 2776 -i smppclient -D "447700900001,not-a-number"
+smpp-bash/send_deliver_sm.sh   -P 2777 -i smppclient -l
+```
+
+```
+deliver_sm #1: 07711878787 -> 1000, esm_class=0, data_coding=0, 4 bytes
+  short_message: blah
+```
+
+Both need `-i smppclient`: the test configurations accept that account rather than the `smppclient1` the scripts default to.
+
+## Fixes
+
+Two long-standing bugs are fixed in this fork. The bundled `smppsim.jar` has been rebuilt and includes both.
+
+### `address_range` is matched as a search, not as a whole-string match
+
+`StandardProtocolHandler.addressIsServicedByReceiver` compared the destination address of a message against the session's `address_range` using `Matcher.matches()`, which requires the entire address to match the expression. SMPP defines `address_range` as a UNIX regular expression, and SMPPSim behaved that way until 2.6.11, when the dependency on the Apache Regexp library was dropped and the semantics changed by accident.
+
+Consequence: a receiver bound with `address_range` `[0-9]` never received messages addressed to, say, `1000`, so those messages piled up in the pending queue. The bundled JUnit suite hung forever in `SmppsimDeliverSmTests`, which binds exactly such a receiver and waits for the MO messages defined in `deliver_messages.csv`.
+
+Matching now uses `Matcher.find()`, restoring the documented behaviour.
+
+### MO injection with `data_coding=0` no longer fails with HTTP 400
+
+`PduUtilities.getJavaEncoding(0)` returned the string `"default"`, which is not a charset name, so `String.getBytes("default")` threw `UnsupportedEncodingException` while parsing the MO injection form. Injecting a message with the SMSC default alphabet — the default selection on `inject_mo.htm` — returned HTTP 400 and queued nothing.
+
+DCS 0 now maps to `null`, which the calling code already handles as "use the platform default encoding".
+
+### Result
+
+The bundled test suite now runs to completion: `OK (25 tests)`.
 
 ## Link
 + Short Message Peer-to-Peer Protocol Specification https://smpp.org/SMPP_v5.pdf
-+ SMPPSim offical web site http://web.archive.org/web/20190916074856/http://www.seleniumsoftware.com/index.html
++ SMPPSim official web site http://web.archive.org/web/20190916074856/http://www.seleniumsoftware.com/index.html
 + SMPPSim free simple tutorial https://www.youtube.com/watch?v=C2s6ixCgel0
