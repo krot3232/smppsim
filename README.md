@@ -14,7 +14,7 @@ It allows you to run a local SMPP SMSC without connecting to a real SMSC.
 - Loopback and ESME to ESME routing, so submitted messages come back as `deliver_sm`
 - Raw and decoded PDU capture to file, plus an optional byte stream callback to an external server
 - Everything driven by a properties file, so several instances with different behaviour can run side by side — see [Configuration](#configuration)
-- Bundled `send_submit_sm.sh`, `send_deliver_sm.sh`, `send_query_sm.sh`, `send_cancel_sm.sh`, `send_replace_sm.sh`, `send_submit_multi.sh`, `send_data_sm.sh` and `send_enquire_link.sh` for exercising a running instance from the command line, with no SMPP client to install — see [smpp-bash/README.md](https://github.com/krot3232/smpp-bash/blob/main/README.md)
+- Bundled `send_submit_sm.sh`, `send_deliver_sm.sh`, `send_query_sm.sh`, `send_cancel_sm.sh`, `send_replace_sm.sh`, `send_submit_multi.sh`, `send_data_sm.sh` and `send_enquire_link.sh` for exercising a running instance from the command line, with no SMPP client to install — see [smpp-bash](https://github.com/krot3232/smpp-bash/)
 - Startup via shell script, `mise` task, `systemd` service or Docker
 
 ## Ports
@@ -435,7 +435,7 @@ OK (25 tests)
 
 The tests authenticate as `smppclient` / `password`, which only the `conf/props.*test*` files define — running them against the default `conf/smppsim.props` fails at bind.
 
-Those three instances are worth keeping around for the [test message scripts](https://github.com/krot3232/smpp-bash/blob/main/README.md) too, because two of them behave differently from the default configuration. The one on 2776 runs `TestProtocolHandler1`, which refuses any destination that is not numeric and so makes `send_submit_multi.sh` report a partially refused response. The one on 2777 runs the MO service, which produces a message a minute from `deliver_messages.csv` for `send_deliver_sm.sh -l` to pick up:
+Those three instances are worth keeping around for the [test message scripts](https://github.com/krot3232/smpp-bash/) too, because two of them behave differently from the default configuration. The one on 2776 runs `TestProtocolHandler1`, which refuses any destination that is not numeric and so makes `send_submit_multi.sh` report a partially refused response. The one on 2777 runs the MO service, which produces a message a minute from `deliver_messages.csv` for `send_deliver_sm.sh -l` to pick up:
 
 ```bash
 smpp-bash/send_submit_multi.sh -P 2776 -i smppclient -D "447700900001,not-a-number"
