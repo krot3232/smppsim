@@ -1013,7 +1013,10 @@ public class StandardProtocolHandler {
 			return true;
 		} else {
 			logger.info("addressIsServicedByReceiver(" + address + ")");
-			result = address_range_regexp.matcher(address).matches();
+			// address_range is a UNIX style regular expression, so this is a
+			// search rather than a whole string match. This preserves the
+			// semantics of the Apache Regexp library used before 2.6.11.
+			result = address_range_regexp.matcher(address).find();
 			return result;
 		}
 	}

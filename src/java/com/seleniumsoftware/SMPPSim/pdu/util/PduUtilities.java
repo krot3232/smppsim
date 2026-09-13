@@ -48,7 +48,8 @@ public class PduUtilities {
 	 * ISO2022JP 0 0 0 0 0 1 1 0 1 Extended Kanji JIS(X 0212-1990) : Extended,
 	 * EUC_JP 0 0 0 0 0 1 1 1 0 KS C 5601 : Extended (Korean), EUC_KR
 	 */
-	private static String[] encodings = { "default", "ASCII", null, // binary
+	private static String[] encodings = { null, // SMSC default alphabet: use the platform default encoding
+			"ASCII", null, // binary
 			"ISO8859_1", null, // binary
 			"EUC_JP", "ISO8859_5", "ISO8859_8", "UTF-16BE", null, // pictograms
 																	// not
