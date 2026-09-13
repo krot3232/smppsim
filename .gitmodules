@@ -1,0 +1,3 @@
+[submodule "smpp-bash"]
+	path = smpp-bash
+	url = https://github.com/krot3232/smpp-bash
