@@ -253,7 +253,7 @@ Properties marked **Required** have no default: leaving them out aborts start-up
 | `SIMULATE_VARIABLE_SUBMIT_SM_RESPONSE_TIMES` | Delay SUBMIT_SM responses by a randomised, drifting amount instead of answering immediately. | `false` |
 | `INBOUND_QUEUE_MAX_SIZE` | Capacity of the inbound queue holding MO messages and delivery receipts. Default `1000`. | `1000` |
 | `OUTBOUND_QUEUE_MAX_SIZE` | Capacity of the outbound queue holding the state of submitted messages. Default `1000`. | `1000` |
-| `DELAYED_INBOUND_QUEUE_PROCESSING_PERIOD` | Interval in seconds between retries of messages an ESME rejected with ESME_RMSGQFUL. Default `60`. | `60` |
+| `DELAYED_INBOUND_QUEUE_PROCESSING_PERIOD` | Interval in `seconds` between retries of messages an ESME rejected with ESME_RMSGQFUL. Default `60`. | `60` |
 | `DELAYED_INBOUND_QUEUE_MAX_ATTEMPTS` | How many times such a message is retried before it is discarded. Default `10`. | `100` |
 | `DELAY_DELIVERY_RECEIPTS_BY` | Hold receipts for this many ms before queueing them. `0` queues them immediately and the delay service is not started. Default `0`. | `1000` |
 | `DELIVERY_RECEIPT_OPTIONAL_PARAMS` | Include the standard v3.4 optional parameters in receipts for clients that bound as 3.4 or later. Defaults to `true` when absent or empty. | `true` |
@@ -299,6 +299,41 @@ The web interface serves its pages through a tiny template mechanism: before a p
 `INJECT_MO_PAGE` names the page that takes part in this twice. Having handled `/inject_mo?...`, the simulator renders that page and returns it as the response, so the browser lands back on the form with the values and the result message filled in. And when the page itself is requested, the simulator recognises the path and forces the rendering path, which a request carrying a query string would otherwise miss and be answered with HTTP 400.
 
 The value therefore has to name a file that exists under `DOCROOT` and is listed in `AUTHORISED_FILES`. Point it at something that is not there and the injection still happens — the message reaches the inbound queue as usual — but the browser gets an empty HTTP 404 instead of the form, which makes the endpoint look broken when it is not.
+
+### The MO service and `deliver_messages.csv`
+
+Besides the injection form, the simulator can originate MO traffic by itself, taking the messages from a file. Set `DELIVERY_MESSAGES_PER_MINUTE` above zero and the service reads `DELIVER_MESSAGES_FILE` at start-up and then sends one message at a time at that rate. The shipped `conf/smppsim.props` leaves the rate at `0`, so the file is unused there; `conf/props.mo` sets it to one a minute, which is the instance the [Testing](#testing) section starts on port 2777.
+
+The service starts lazily, when a receiver session first binds, and stops when the last one goes away — there is no point generating messages nobody can receive.
+
+Each line of the file is one message, with no header:
+
+```
+source_addr,destination_addr,short_message
+```
+
+The line is split on the first two commas only, so the text may contain commas of its own; the two addresses may not. A line prefixed with `0x` in the text field is read as hexadecimal bytes rather than characters, and the message then goes out with `data_coding` set to `4`, binary. Invalid hex is not fatal: the simulator logs a warning and sends the line as plain text. The bundled file exercises both forms:
+
+```
+07711878787,1000,A test message
+07711878787,1000,SMPPSim!
+07711878787,1000,0x313233343536373839
+```
+
+The last line arrives as `123456789` with `data_coding=4`.
+
+Messages are picked at random, not in order, so a long run repeats some and skips others. Watch them arrive with the listening mode of the delivery script:
+
+```bash
+smpp-bash/send_deliver_sm.sh -P 2777 -i smppclient -l
+```
+
+```
+deliver_sm #1: 07711878787 -> 1000, esm_class=0, data_coding=0, 14 bytes
+  short_message: A test message
+```
+
+Note the destination in the shipped file: `1000`. A receiver only gets these messages if the `address_range` it bound with matches that address, which is why the example above lets the script fall back to its default of `.*`.
 
 ## Logging
 
