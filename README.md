@@ -204,6 +204,8 @@ You can also check the Web interface using `curl`:
 curl http://localhost:8088
 ```
 
+What else that port answers — statistics, MO injection and a shutdown command — is in [HTTP Interface](#http-interface).
+
 ## Test Message Scripts
 
 `smpp-bash/` holds a set of command line tools that drive the simulator over real SMPP — submitting messages, receiving them, querying, cancelling, replacing and pinging a session — so a running instance can be checked without installing an SMPP client. They are plain bash over `/dev/tcp`: no client library, no Java, nothing to install, and the exit status of each one distinguishes the failure modes, which makes them usable as smoke tests in CI.
@@ -220,6 +222,88 @@ unbound
 ```
 
 The full documentation — what each script does, every option, the exit codes and the simulator behaviour worth knowing about — is in [smpp-bash/README.md](https://github.com/krot3232/smpp-bash/blob/main/README.md).
+
+## HTTP Interface
+
+Besides the SMPP port the simulator runs a small HTTP server of its own: `HttpHandler`, a hand written HTTP/1.0 server, not a servlet container. It listens on `HTTP_PORT` (`8088` by default) with `HTTP_THREADS` threads all accepting on the same socket, serves the control panel out of `DOCROOT` and takes its commands from the query string.
+
+| Request | What it does |
+|---------|--------------|
+| `GET /` or `GET /index.htm` | Control panel: version, start time, bound sessions, queue depths and an OK/error counter for every PDU type |
+| `GET /?refresh` | The same page, and cancels a pending shutdown confirmation |
+| `GET /?stats` | Two counters as plain text: `submittedok=N,deliveredok=M` |
+| `GET /?shutdown` | Stops the simulator — takes two requests, see below |
+| `GET /inject_mo?...` | Injects an MO message into the inbound queue |
+| `GET /inject_mo.htm` | The injection form, which submits to `/inject_mo` by GET |
+| `GET /user-guide.htm`, stylesheet, images | Static files, but only those listed in `AUTHORISED_FILES` |
+
+Only the request line is looked at, and only its second token: the method is read and thrown away, headers and body are never read at all. A browser, `curl` and `curl -X POST` therefore all get the same answer, and nothing a request carries beyond the URI has any effect. Every response is HTTP/1.0 with no `Content-Length`, and the connection is closed once the response has been written.
+
+There is no authentication, and the listener is bound to every interface, so anyone who can reach `HTTP_PORT` can inject messages and stop the instance. Keep it on a trusted network, or give the instance a properties file with a port nobody else can reach.
+
+### Stopping the simulator
+
+`?shutdown` is a two step command: the first request only arms it, the second one carries it out.
+
+```bash
+curl "http://localhost:8088/?shutdown"   # arms the shutdown
+curl "http://localhost:8088/?shutdown"   # confirms it
+```
+
+The first response is the control panel with `Please confirm by selecting Shutdown again or select Refresh to cancel...` where the status message normally goes — the same page the Shutdown link of the web interface lands on. The second request calls `Smsc.stop()`, which stops the MO service, the queue services and the connection handlers and closes the listening sockets, and then exits the JVM two seconds later:
+
+```
+2026.09.14 16:19:36 634 INFO    71 Shutting down SMPPSim
+2026.09.14 16:19:36 634 INFO    71 HTTP Handler exiting
+2026.09.14 16:19:36 635 INFO    73 Lifecycle Service (OutboundQueue) is exiting
+2026.09.14 16:19:36 637 INFO    71 Halting http server thread
+```
+
+Because the sockets are closed while that second response is still being written, the confirming request usually ends without a reply: `curl: (52) Empty reply from server`, or an HTTP code of `000` under `curl -s -w '%{http_code}'`. That is the normal outcome of a successful shutdown, not a failure — check the log or the port rather than the response.
+
+Worth knowing about the confirmation:
+
+- the two requests need not use the same path: `/?shutdown` followed by `/index.htm?shutdown` works, because the pending confirmation belongs to the handler, not to the page;
+- anything that renders a page in between cancels it — `?refresh`, and an ordinary request for `/` or any other page as well — and the next `?shutdown` starts over by asking for confirmation again;
+- the flag is per handler thread. With `HTTP_THREADS` above 1 the confirming request may be accepted by a different thread, which will just arm its own flag and ask again; leave `HTTP_THREADS` at the shipped `1` if a script is going to stop the instance this way;
+- the command has to be the whole query string. Case does not matter, so `?SHUTDOWN` works, but `?shutdown=1` is not recognised;
+- the shutdown does not depend on the page being there: even when `DOCROOT` is wrong and the response is a bare 404, the instance still stops.
+
+### Statistics
+
+`?stats` answers with a single line and no markup, which makes it the endpoint to poll from a test:
+
+```bash
+curl "http://localhost:8088/?stats"
+```
+
+```
+submittedok=0,deliveredok=0
+```
+
+`submittedok` counts `submit_sm` PDUs accepted with `ESME_ROK`, `deliveredok` counts `deliver_sm` PDUs the simulator delivered to an ESME successfully — delivery receipts included, since those are `deliver_sm` too. The counters run from start-up and are never reset; `?refresh` redraws the control panel but does not zero anything. The full per PDU breakdown, including the error counters, is only on the control panel page.
+
+### Injecting an MO message
+
+`/inject_mo` takes the fields of the `deliver_sm` it should build straight from the query string, under their SMPP names. Nothing is mandatory — whatever is left out keeps the value of the previous injection, which is what makes the form remember what you typed:
+
+```bash
+curl "http://localhost:8088/inject_mo?source_addr=07711878787&destination_addr=1000&short_message=Hello&data_coding=0"
+```
+
+The message goes into the inbound queue and from there to a bound receiver whose `address_range` matches `destination_addr`; with no receiver bound it waits in the pending queue. `short_message` is URL decoded and then encoded according to `data_coding`, and if the request carries a `format` parameter at all — the form sends `format=yes` — the text is read as a hex string instead. `sm_length` is worked out from the message unless the request sets it. Optional parameters are supported as well, both named ones like `user_message_reference` or `message_payload` and up to seven raw TLVs through `tlv1_tag`, `tlv1_len` and `tlv1_val` up to `tlv7_*`; `www/inject_mo.htm` is the list of everything the form itself sends.
+
+The response is the injection page again, rendered with the values just used and `Message added to SMPPSim InboundQueue OK` as its status message — see [About `INJECT_MO_PAGE`](#about-inject_mo_page) for why that page has to exist. A parameter the simulator cannot parse, a bad number or an unknown encoding, gets `HTTP/1.1 400 REQUEST NOT UNDERSTOOD BY SERVER` and no message is injected.
+
+For MO traffic generated by the simulator itself rather than injected request by request, see [The MO service and `deliver_messages.csv`](#the-mo-service-and-deliver_messagescsv).
+
+### Serving files
+
+`AUTHORISED_FILES` is an allow list of exact paths, and it is the whole access control of the web server: `/` and `/inject_mo` are handled specially, everything else has to be in the list literally. A new page, stylesheet or image dropped into `www` stays invisible until its path is added there.
+
+A request for a path that is not authorised, or one containing `..`, gets no response at all — the connection is simply closed, which `curl` reports as `curl: (52) Empty reply from server` rather than as 400 or 404. An authorised path whose file is missing under `DOCROOT` does get a real `HTTP/1.0 404 Not Found`, with an empty body.
+
+One trap in `DOCROOT`: the handler uses only the last segment of it and resolves that against the working directory, so `DOCROOT=/opt/smppsim/www` makes the server look for `www/index.htm` under whatever directory the JVM was started in, and the control panel answers 404 everywhere else. Keep `DOCROOT=www` and start the simulator from the directory that holds `www`, as all the methods in [Running](#running) do.
 
 ## Configuration
 
