@@ -9,10 +9,10 @@ It allows you to run a local SMPP SMSC without connecting to a real SMSC.
 
 - SMPP server for testing clients, covering bind, `submit_sm`, `submit_multi`, `data_sm`, `deliver_sm`, `query_sm`, `cancel_sm`, `replace_sm`, `enquire_link`, `unbind` and outbind
 - Simulated message life cycle: messages move through delivery states on configurable probabilities and produce delivery receipts
-- Web interface with a form for injecting MO messages and a `?stats` endpoint
+- Web interface with a form for injecting MO messages, a `?stats` endpoint and a shutdown command — see [HTTP Interface](#http-interface)
 - MO traffic generated from a CSV file at a configurable rate
 - Loopback and ESME to ESME routing, so submitted messages come back as `deliver_sm`
-- Raw and decoded PDU capture to file, plus an optional byte stream callback to an external server
+- Raw and decoded PDU capture to file, plus an optional byte stream callback to an external server — see [Callback Channel](#callback-channel)
 - Everything driven by a properties file, so several instances with different behaviour can run side by side — see [Configuration](#configuration)
 - Bundled `send_submit_sm.sh`, `send_deliver_sm.sh`, `send_query_sm.sh`, `send_cancel_sm.sh`, `send_replace_sm.sh`, `send_submit_multi.sh`, `send_data_sm.sh` and `send_enquire_link.sh` for exercising a running instance from the command line, with no SMPP client to install — see [smpp-bash](https://github.com/krot3232/smpp-bash/)
 - Startup via shell script, `mise` task, `systemd` service or Docker
@@ -305,6 +305,80 @@ A request for a path that is not authorised, or one containing `..`, gets no res
 
 One trap in `DOCROOT`: the handler uses only the last segment of it and resolves that against the working directory, so `DOCROOT=/opt/smppsim/www` makes the server look for `www/index.htm` under whatever directory the JVM was started in, and the control panel answers 404 everywhere else. Keep `DOCROOT=www` and start the simulator from the directory that holds `www`, as all the methods in [Running](#running) do.
 
+## Callback Channel
+
+The callback is a second way out of the simulator, next to the ESME session itself: with `CALLBACK=true` SMPPSim opens a TCP connection of its own to `CALLBACK_TARGET_HOST:CALLBACK_PORT` — `localhost:3333` by default — and pushes a copy of the PDU traffic into it. It is off in every shipped properties file, and it is meant for a test harness that wants to watch the wire without sitting between the client and the simulator, or without turning on the capture files.
+
+The receiving end is a program you run yourself. One is bundled as an example:
+
+```bash
+./start_callback_server.sh
+```
+
+```
+2026.09.14 17:12:27 426 INFO    1 Starting example Callback Server..
+2026.09.14 17:12:27 494 INFO    1 Example Callback Server is listening on port 3333
+2026.09.14 17:12:29 519 INFO    19 CallbackHandler has accepted a connection
+```
+
+Start it before the simulator, or at least expect the log line below until it appears. Then every PDU shows up as a hex dump with its type named:
+
+```
+2026.09.14 17:12:39 522 INFO    19 SMPPSim received from ESME
+2026.09.14 17:12:39 523 INFO    19 Hex dump (73) bytes:
+2026.09.14 17:12:39 524 INFO    19 00000049:0153494D:31000000:40000000:
+2026.09.14 17:12:39 525 INFO    19 04000000:00000000:02000101:31323334:
+2026.09.14 17:12:39 527 INFO    19 35000101:34343737:30303930:30303030:
+2026.09.14 17:12:39 528 INFO    19 00000000:00000000:00000E63:616C6C62:
+2026.09.14 17:12:39 528 INFO    19 61636B20:70726F62:65
+2026.09.14 17:12:39 528 INFO    19 ====================================
+2026.09.14 17:12:39 528 INFO    19 (PDU type was SubmitSm)
+```
+
+### The frame
+
+Each PDU is wrapped in a nine byte envelope, so the stream can be cut into messages without parsing SMPP:
+
+| Bytes | Meaning |
+|---|---|
+| 0–3 | Length of the whole frame, big endian: the PDU length plus 9 |
+| 4 | Direction: `1` received from the ESME, `2` sent to the ESME |
+| 5–8 | `CALLBACK_ID` in ASCII, which tells apart several instances writing to one receiver |
+| 9… | The SMPP PDU exactly as it went over the session socket |
+
+The dump above starts with `00000049` — 73 bytes, the 64 byte SUBMIT_SM plus the envelope — then `01` for the direction and `53494D31`, `SIM1`. The PDU itself begins at `0000004000000004`, a SUBMIT_SM of 64 bytes.
+
+`CALLBACK_ID` has to be exactly four ASCII characters. A longer value is silently truncated to the first four — `SIMULATOR` arrives as `SIMU` — but a shorter one throws `ArrayIndexOutOfBoundsException` out of the middle of PDU processing, and the session it happened on gets no response at all: the client hangs until its own timeout and the simulator never recovers that session.
+
+### What actually reaches the receiver
+
+Despite the direction byte, only one direction is ever sent: everything the simulator receives from an ESME — the binds, SUBMIT_SM, DATA_SM, ENQUIRE_LINK, UNBIND and the rest, each PDU passed on before it is processed. The outbound call exists in `StandardConnectionHandler` but hands over a field that is never assigned, so it is always `null` and `Smsc.callback()` drops it. Nothing the simulator sends — no responses, and no DELIVER_SM from the inbound queue — appears on the callback connection, whatever the `CALLBACK` description in the table below suggests. Use the capture files (`CAPTURE_SMPPSIM_BINARY_TO_FILE` and the decoded log) when you need the other half of the conversation.
+
+### Writing your own receiver
+
+`com.seleniumsoftware.examples` is four small classes and is meant to be copied:
+
+| Class | Role |
+|---|---|
+| `CallbackServer` | Listens on the port and starts ten `CallbackHandler` threads, all accepting on one socket |
+| `CallbackHandler` | Reads the length prefix, reassembles one frame, looks at the direction byte and calls the receiver |
+| `CallbackReceivable` | The interface to implement: `received(byte[] pdu)` and `sent(byte[] pdu)` |
+| `CallbackReceiver` | The example implementation, which hex dumps the frame and names the PDU type |
+
+The array handed to `received` is the whole frame, envelope included, which is why `CallbackReceiver` reads the `command_id` at offset 16 rather than 4. The example reads the socket a byte at a time and only detects end of file on the fourth length byte, so treat it as a starting point rather than as production code.
+
+### When the receiver is not there
+
+The connection is made from a thread of its own during start-up, so a missing receiver never stops the simulator from starting. It retries once a second and says so:
+
+```
+INFO: Callback server not accepting connections - retrying
+```
+
+Until it succeeds the callback is simply skipped and the simulator serves SMPP normally.
+
+A receiver that disappears after the connection is up is a different matter. The copy is written from inside PDU processing, in a synchronized method, and on a failed write the simulator reconnects and retries the same frame until it gets through. So the session stalls: a SUBMIT_SM sent while the receiver is down gets no response and the client times out. Everything resumes as soon as the receiver is back, the pending frame goes out and the sessions carry on, but the stall lasts exactly as long as the outage — which makes the callback a poor fit for a receiver that comes and goes, and a reason not to leave `CALLBACK=true` in a properties file used for unattended runs.
+
 ## Configuration
 
 SMPPSim takes exactly one command line argument: the path to a properties file. Every property below is read by `SMPPSim.initialise()`, and the effective values are echoed to the log at start-up.
@@ -365,7 +439,7 @@ Properties marked **Required** have no default: leaving them out aborts start-up
 | `CAPTURE_SME_DECODED_TO_FILE` | Destination file for the above. | `sme_decoded.capture` |
 | `CAPTURE_SMPPSIM_DECODED` | Write the decoded text form of sent PDUs to a file. | `false` |
 | `CAPTURE_SMPPSIM_DECODED_TO_FILE` | Destination file for the above. | `smppsim_decoded.capture` |
-| `CALLBACK` | Mirror every PDU sent and received to an external TCP callback server. | `false` |
+| `CALLBACK` | Copy PDUs to an external TCP callback server. In practice only what the ESME sends reaches it — see [Callback Channel](#callback-channel). | `false` |
 | `CALLBACK_TARGET_HOST` | Host of that server. Read only when `CALLBACK` is true. | `localhost` |
 | `CALLBACK_PORT` | Port of that server. | `3333` |
 | `CALLBACK_ID` | Four ASCII characters written into each callback frame to identify this instance. | `SIM1` |
@@ -376,7 +450,7 @@ Notes:
 - All timings are in milliseconds except `DELAYED_INBOUND_QUEUE_PROCESSING_PERIOD`, which is in seconds.
 - Capture files are deleted and recreated on every start-up.
 - Log destinations are not configured here but through the `java.util.logging` file passed as `-Djava.util.logging.config.file` — see [Logging](#logging).
-- A sample callback server is bundled as `com.seleniumsoftware.examples.CallbackServer`; start it with `./start_callback_server.sh`.
+- A sample callback server is bundled as `com.seleniumsoftware.examples.CallbackServer`; start it with `./start_callback_server.sh` and see [Callback Channel](#callback-channel).
 
 ### About `INJECT_MO_PAGE`
 
